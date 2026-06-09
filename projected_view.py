@@ -1,5 +1,4 @@
 # projected_view.py — Standalone Projected View
-# pip install streamlit matplotlib numpy
 # streamlit run projected_view.py
 
 import io
@@ -9,20 +8,27 @@ from matplotlib.colors import LinearSegmentedColormap
 import streamlit as st
 
 st.set_page_config(page_title="Projected View", layout="wide")
-st.markdown('<h2 style="color:#ffffff;">🎯 Projected View</h2>', unsafe_allow_html=True)
-st.markdown(
-    '<p style="color:#9ca3af;font-size:13px;">'
-    'Enter percentiles (0–100) for each metric then click <b>Generate</b>. '
-    'Left = Team &nbsp;·&nbsp; Right = Role</p>',
-    unsafe_allow_html=True,
-)
 
-# ── Chart function ─────────────────────────────────────────────────────────────
-_CMAP = LinearSegmentedColormap.from_list("rr", ["#ef4444", "#f97316", "#facc15", "#4ade80"])
+st.markdown("""
+<style>
+body, .stApp { background-color: #0a0f1c; color: #ffffff; }
+div[data-testid="stNumberInput"] label p,
+div[data-testid="stSelectbox"] label p,
+div[data-testid="stButton"] p { color: #ffffff !important; }
+div[data-testid="stNumberInput"] input { color: #ffffff !important; background: #1a2035 !important; }
+</style>
+""", unsafe_allow_html=True)
 
+st.markdown('<h2 style="color:#ffffff;margin-bottom:2px;">🎯 Projected View</h2>', unsafe_allow_html=True)
+st.markdown('<p style="color:#9ca3af;font-size:13px;margin-top:0;">Enter percentiles (0–100). Left = Team &nbsp;·&nbsp; Right = Role. Add/remove metrics then hit <b>Generate</b>.</p>', unsafe_allow_html=True)
+
+# ── Exact colormap from main app ───────────────────────────────────────────────
+_VALUE_COLORS = ["#be2a3e","#e25f48","#f88f4d","#f4d166","#90b960","#4b9b5f","#22763f"]
+_CMAP = LinearSegmentedColormap.from_list("rr_pct", _VALUE_COLORS)
+
+# ── Chart — exact copy of _rr_split_polar_fig ─────────────────────────────────
 def build_chart(team_labels, team_pcts, role_labels, role_pcts):
-    TEAM_TRACK = "#2b3646"
-    ROLE_TRACK = "#362b46"
+    TEAM_TRACK = "#2b3646"; ROLE_TRACK = "#362b46"
     fig = plt.figure(figsize=(9.2, 8.2))
     fig.patch.set_facecolor("#0a0f1c")
     ax = fig.add_axes([0.06, 0.06, 0.88, 0.88], polar=True)
@@ -65,8 +71,21 @@ def build_chart(team_labels, team_pcts, role_labels, role_pcts):
     fig.text(0.96, 0.965, "ROLE", ha="right", va="top", fontsize=18, fontweight="900", color="#f472b6")
     return fig
 
-# ── Role configs ───────────────────────────────────────────────────────────────
-TABS = {
+# ── All available metric options ───────────────────────────────────────────────
+ALL_METRICS = sorted([
+    "Aerial Requirement", "Aerial Volume", "Attacking Contribution", "Attacking Territory",
+    "Ball Carrying", "Box Entries", "Build Up Speed", "Claim Rate", "Command of Area",
+    "Compactness", "Counter Press", "Creativity", "Crosses", "Deeper Playmaking",
+    "Defensive Volume", "Direct Play", "Distribution", "Goal Output", "Goal Threat",
+    "High Press", "Line Height", "Long Balls", "Long Pass Volume", "Off Ball Movement",
+    "Opportunities", "Pass Verticality", "Pass Volume", "Passes", "Possession",
+    "Pressing", "Pressing Intensity", "Progression Volume", "Retention", "Set Piece Threat",
+    "Shot Volume", "Shots Faced", "Sweeping", "Transition Speed", "Vertical Runs",
+    "Width", "xG", "xGA",
+])
+
+# ── Default configs ────────────────────────────────────────────────────────────
+DEFAULTS = {
     "Center Backs": {
         "team": ["Possession", "Passes", "Pressing", "Build Up Speed", "Line Height"],
         "role": ["Pass Volume", "Progression Volume", "Pass Verticality", "Defensive Volume", "Aerial Volume"],
@@ -93,39 +112,94 @@ TABS = {
     },
 }
 
-# ── Render ─────────────────────────────────────────────────────────────────────
-tabs = st.tabs(list(TABS.keys()))
+# ── Init session state ─────────────────────────────────────────────────────────
+for title, cfg in DEFAULTS.items():
+    rk = title.lower().replace(" ", "_")
+    for side in ("team", "role"):
+        sk = f"metrics_{rk}_{side}"
+        if sk not in st.session_state:
+            st.session_state[sk] = list(cfg[side])
 
-for tab, (title, cfg) in zip(tabs, TABS.items()):
+# ── Callbacks ──────────────────────────────────────────────────────────────────
+def do_add(rk, side):
+    sel = st.session_state.get(f"addsel_{rk}_{side}", "")
+    sk  = f"metrics_{rk}_{side}"
+    if sel and sel != "—" and sel not in st.session_state[sk]:
+        st.session_state[sk].append(sel)
+
+def do_remove(rk, side, metric):
+    sk = f"metrics_{rk}_{side}"
+    if metric in st.session_state[sk] and len(st.session_state[sk]) > 4:
+        st.session_state[sk].remove(metric)
+
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+tabs = st.tabs(list(DEFAULTS.keys()))
+
+for tab, title in zip(tabs, DEFAULTS.keys()):
     with tab:
-        rk = title.lower().replace(" ", "_")
+        rk        = title.lower().replace(" ", "_")
         cache_key = f"png_{rk}"
-
-        c1, c2 = st.columns([1, 2])
+        c1, c2    = st.columns([1, 2])
 
         with c1:
-            st.markdown('<p style="color:#60a5fa;font-weight:700;font-size:13px;margin-bottom:4px;">TEAM</p>', unsafe_allow_html=True)
-            t_pcts = []
-            for m in cfg["team"]:
-                t_pcts.append(st.number_input(m, 0, 100, 50, 1, key=f"t_{rk}_{m}"))
+            for side, color in (("team", "#60a5fa"), ("role", "#f472b6")):
+                sk      = f"metrics_{rk}_{side}"
+                metrics = st.session_state[sk]
 
-            st.markdown('<p style="color:#f472b6;font-weight:700;font-size:13px;margin-top:10px;margin-bottom:4px;">ROLE</p>', unsafe_allow_html=True)
-            r_pcts = []
-            for m in cfg["role"]:
-                r_pcts.append(st.number_input(m, 0, 100, 50, 1, key=f"r_{rk}_{m}"))
+                st.markdown(
+                    f'<p style="color:{color};font-weight:700;font-size:13px;'
+                    f'margin-top:10px;margin-bottom:4px;">{side.upper()}</p>',
+                    unsafe_allow_html=True,
+                )
+
+                # Add row
+                available = ["—"] + [m for m in ALL_METRICS if m not in metrics]
+                a1, a2 = st.columns([4, 1])
+                with a1:
+                    st.selectbox("add", available, key=f"addsel_{rk}_{side}",
+                                 label_visibility="collapsed")
+                with a2:
+                    st.button("＋", key=f"addbtn_{rk}_{side}",
+                              on_click=do_add, args=(rk, side),
+                              use_container_width=True)
+
+                # Metric rows
+                for m in list(metrics):
+                    r1, r2 = st.columns([3, 1])
+                    with r1:
+                        st.number_input(m, 0, 100, 50, 1,
+                                        key=f"val_{rk}_{side}_{m}")
+                    with r2:
+                        if len(metrics) > 4:
+                            st.button("✕", key=f"rem_{rk}_{side}_{m}",
+                                      on_click=do_remove, args=(rk, side, m),
+                                      use_container_width=True)
 
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-            if st.button("Generate", key=f"gen_{rk}", use_container_width=True, type="primary"):
-                fig = build_chart(cfg["team"], t_pcts, cfg["role"], r_pcts)
+            generate = st.button("Generate", key=f"gen_{rk}",
+                                 use_container_width=True, type="primary")
+
+        with c2:
+            if generate:
+                t_metrics = st.session_state[f"metrics_{rk}_team"]
+                r_metrics = st.session_state[f"metrics_{rk}_role"]
+                t_pcts = [int(st.session_state.get(f"val_{rk}_team_{m}", 50)) for m in t_metrics]
+                r_pcts = [int(st.session_state.get(f"val_{rk}_role_{m}", 50)) for m in r_metrics]
+
+                fig = build_chart(t_metrics, t_pcts, r_metrics, r_pcts)
                 buf = io.BytesIO()
-                fig.savefig(buf, format="png", dpi=300, bbox_inches="tight",
-                            facecolor=fig.get_facecolor())
+                fig.savefig(buf, format="png", dpi=300,
+                            bbox_inches="tight", facecolor=fig.get_facecolor())
                 plt.close(fig)
                 buf.seek(0)
                 st.session_state[cache_key] = buf.getvalue()
 
-        with c2:
             if cache_key in st.session_state:
+                st.markdown(
+                    f'<p style="color:#9ca3af;font-size:12px;margin-bottom:0;">'
+                    f'{title} — Projected View</p>',
+                    unsafe_allow_html=True,
+                )
                 st.image(st.session_state[cache_key], use_container_width=True)
                 st.download_button(
                     f"⬇️ Download {title}",
